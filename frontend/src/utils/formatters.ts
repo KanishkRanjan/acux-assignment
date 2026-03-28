@@ -1,9 +1,8 @@
 import { logger } from "./logger";
 
 export const getScoreInfo = (ctr: number) => {
-  // Guard Clause against non-numeric metrics traversing from network layer
   if (typeof ctr !== 'number' || isNaN(ctr)) {
-    logger.warn("formatters/getScoreInfo", "Invoked with an invalid CTR format. Falling back to neutral.", { paramReceived: ctr });
+    logger.warn("formatters/getScoreInfo", "SYS_RENDER", "Invoked with an invalid CTR format. Falling back to neutral.", { paramReceived: ctr });
     return { dotClass: "neutral", textClass: "neutral", label: "(Unknown)" };
   }
 
@@ -16,7 +15,7 @@ export const getScoreInfo = (ctr: number) => {
 
 export const formatId = (id?: string | null) => {
   if (!id) {
-    logger.warn("formatters/formatId", "Function invoked with unpopulated or null ID attribute. Defaulting to #NA.");
+    logger.warn("formatters/formatId", "SYS_RENDER", "Function invoked with unpopulated or null ID attribute. Defaulting to #NA.");
     return "#NA";
   }
   return `#${id.substring(0, 4).toUpperCase()}`;
@@ -24,13 +23,13 @@ export const formatId = (id?: string | null) => {
 
 export const formatTime = (ts?: string | null) => {
   if (!ts) {
-    logger.warn("formatters/formatTime", "Function invoked with empty timestamp segment.");
+    logger.warn("formatters/formatTime", "SYS_RENDER", "Function invoked with empty timestamp segment.");
     return "--:--:--";
   }
 
   const d = new Date(ts);
   if (isNaN(d.getTime())) {
-    logger.warn("formatters/formatTime", "Failed to deserialize timestamp into JS Date object. Falling back.", { rawReceivedString: ts });
+    logger.warn("formatters/formatTime", "SYS_RENDER", "Failed to deserialize timestamp into JS Date object. Falling back.", { rawReceivedString: ts });
     return "--:--:--";
   }
 
