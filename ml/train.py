@@ -2,8 +2,9 @@
 CTR Model Training Script
 =========================
 Trains multiple classifier candidates on ad_logs.csv, evaluates them with
-cross-validated AUC-ROC, and saves the best-performing pipeline to
-ml/models/ctr_model.pkl for use by the inference service.
+cross-validated AUC-ROC, calibrates the best model for strict mathematical
+accuracy, and saves the best-performing pipeline to ml/models/ctr_model.pkl
+for use by the inference service.
 
 Models compared:
   - Logistic Regression (baseline)
@@ -148,8 +149,9 @@ def train_model():
 
     best_pipeline = candidates[best_name]
 
-    # ── Final Fit on Full Training Set ───────────────────────
-    logger.info("Training best model on full training set...")
+    # ── Final Fit & Calibration on Full Training Set ─────────
+    logger.info("Training and calibrating best model on full training set...")
+    best_pipeline = CalibratedClassifierCV(estimator=best_pipeline, method='sigmoid', cv=5)
     best_pipeline.fit(X_train, y_train)
 
     # ── Evaluation Report ─────────────────────────────────────
@@ -173,7 +175,7 @@ def train_model():
     with open(model_path, 'wb') as f:
         pickle.dump(best_pipeline, f)
 
-    logger.info(f"\n✓ Uncalibrated {best_name} pipeline saved to: {model_path}")
+    logger.info(f"\n✓ Calibrated {best_name} pipeline saved to: {model_path}")
 
 
 if __name__ == "__main__":
