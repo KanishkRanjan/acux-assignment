@@ -47,6 +47,16 @@ export default function Dashboard() {
         valB = b.request[key as keyof AdRequest];
       }
 
+      if (valA == null && valB == null) return 0;
+      if (valA == null) return 1;
+      if (valB == null) return -1;
+
+      if (typeof valA === "string" && typeof valB === "string") {
+        return direction === "asc"
+          ? valA.localeCompare(valB)
+          : valB.localeCompare(valA);
+      }
+
       if (valA < valB) return direction === "asc" ? -1 : 1;
       if (valA > valB) return direction === "asc" ? 1 : -1;
       return 0;
