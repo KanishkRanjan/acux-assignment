@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 from backend.config import settings
-import redis.asyncio as redis
 
 logger = logging.getLogger(__name__)
 
@@ -11,11 +10,7 @@ _memory_queues = {}
 class PubSubService:
     def __init__(self):
         self.backend = settings.STREAMING_BACKEND
-        self.redis_client = None
         self.kafka_producer = None
-        
-        if self.backend == "redis":
-            self.redis_client = redis.from_url(settings.REDIS_URL)
 
     async def _get_kafka_producer(self):
         if not self.kafka_producer:
@@ -27,9 +22,7 @@ class PubSubService:
         return self.kafka_producer
 
     async def publish(self, topic: str, message: dict):
-        if self.backend == "redis":
-            await self.redis_client.publish(topic, json.dumps(message))
-        elif self.backend == "kafka":
+        if self.backend == "kafka":
             try:
                 producer = await self._get_kafka_producer()
                 await producer.send_and_wait(topic, json.dumps(message).encode('utf-8'))
@@ -41,14 +34,12 @@ class PubSubService:
             await _memory_queues[topic].put(message)
 
     async def subscribe(self, topic: str):
-        if self.backend == "redis":
-            pubsub = self.redis_client.pubsub()
-            await pubsub.subscribe(topic)
-            async for message in pubsub.listen():
-                if message['type'] == 'message':
-                    yield json.loads(message['data'])
-        elif self.backend == "kafka":
+        if self.backend == "kafka":
             from aiokafka import AIOKafkaConsumer
+            # Allow Kafka's Group Coordinator to fully boot before subscribing.
+            # Without this delay, the consumer races against Kafka's internal
+            # initialization and throws GroupCoordinatorNotAvailableError.
+            await asyncio.sleep(10)
             # Setup consumer with retry loop for initial connection
             connected = False
             while not connected:

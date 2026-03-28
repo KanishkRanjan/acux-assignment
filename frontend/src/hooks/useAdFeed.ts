@@ -164,6 +164,7 @@ export function useAdFeed(config?: AdFeedConfig) {
 
   useEffect(() => {
     logger.debug("useAdFeed/useEffect", sessionId.current, "Mounting useAdFeed hook lifecycle");
+    localStorage.setItem('session_id', sessionId.current);
     connect();
 
     return () => {
