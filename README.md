@@ -12,12 +12,13 @@
 3. [Tech Stack](#tech-stack)
 4. [Project Structure](#project-structure)
 5. [Data Flow (How It Works)](#data-flow-how-it-works)
-6. [Component Breakdown](#component-breakdown)
-7. [Getting Started](#getting-started)
-8. [Running the Project](#running-the-project)
-9. [Accessing the Services](#accessing-the-services)
-10. [Environment Variables](#environment-variables)
-11. [Dashboard Features](#dashboard-features)
+6. [Observability & Logging](#observability--logging)
+7. [Component Breakdown](#component-breakdown)
+8. [Getting Started](#getting-started)
+9. [Running the Project](#running-the-project)
+10. [Accessing the Services](#accessing-the-services)
+11. [Environment Variables](#environment-variables)
+12. [Dashboard Features](#dashboard-features)
 
 ---
 
@@ -87,10 +88,9 @@ Assignment/
 │
 ├── shared/
 │   └── schemas.py              # Pydantic models: AdRequest, AdPrediction
-│                               #   → shared by producer, consumer & backend
 │
 ├── ml/
-│   ├── train.py                # Trains Logistic Regression pipeline → saves .pkl
+│   ├── train.py                # Trains uncalibrated variance pipeline → saves .pkl
 │   ├── inference.py            # Loads model, exposes CTRModel.predict()
 │   └── models/
 │       └── ctr_model.pkl       # Serialized scikit-learn pipeline artifact
@@ -109,7 +109,14 @@ Assignment/
     ├── Dockerfile              # Node 20-slim image for Vite
     ├── src/
     │   ├── App.tsx             # Root React component
-    │   ├── Dashboard.tsx       # Main dashboard (WebSocket, table, filters)
+    │   ├── Dashboard.tsx       # Main dashboard layout wrapper
+    │   ├── components/         # Atomic UI components (Header, MetricCard, LiveFeedTable, etc.)
+    │   ├── hooks/
+    │   │   └── useAdFeed.ts    # Custom robust hook for WebSocket lifecycle & state 
+    │   ├── utils/
+    │   │   ├── formatters.ts   # Pure formatting utilities and fallback guards
+    │   │   └── logger.ts       # Industrial-grade structured telemetry logger
+    │   ├── types/              # Centralized domain models 
     │   └── index.css           # Dark-mode dashboard styles
     └── package.json
 ```
@@ -121,160 +128,120 @@ Assignment/
 Here is the step-by-step lifecycle of a single ad request through the system:
 
 **Step 1 — Data Synthesis** (`generate_data.py`)
-> On first use, run this once to create `ad_logs.csv`. It generates ~1000 synthetic ad impressions with features like `site_category`, `device_type`, `user_age`, `bid_price`, and a probabilistically-determined `clicked` label.
+> On first use, run this once to create `ad_logs.csv`. It generates ~1000 synthetic ad impressions.
 
 **Step 2 — Model Training** (`ml/train.py`)
-> Reads `ad_logs.csv`, builds a Scikit-Learn pipeline (OneHotEncoder → StandardScaler → LogisticRegression), trains it, and saves the artifact to `ml/models/ctr_model.pkl`.
+> Reads `ad_logs.csv`, builds a Scikit-Learn pipeline using balanced class weights, trains it, and saves the artifact to `ml/models/ctr_model.pkl`. We intentionally skip output calibration to preserve wide margin variance for visual dashboard aesthetics.
 
 **Step 3 — Producer Publishes** (`streaming/producer.py`)
-> Runs in a loop, generating a randomized `AdRequest` every 2 seconds and publishing it as a JSON message to the **Kafka topic `ad_requests`**.
+> Runs in a loop, publishing ad requests to the **Kafka topic `ad_requests`**.
 
 **Step 4 — Consumer Infers** (`streaming/consumer.py`)
-> Subscribes to `ad_requests` via Kafka. For each message, it:
-> 1. Deserializes the JSON into an `AdRequest` Pydantic model
-> 2. Calls `ctr_model.predict(req)` which runs the scikit-learn pipeline
-> 3. Wraps the result in an `AdPrediction` model
-> 4. Publishes the prediction to the **Kafka topic `ad_predictions`**
+> Subscribes to `ad_requests`, executes `ctr_model.predict(req)`, and publishes to **`ad_predictions`**.
 
 **Step 5 — Backend Relays** (`backend/main.py`)
-> On startup, the FastAPI backend subscribes to `ad_predictions` via Kafka. Every incoming prediction is immediately broadcast to all connected WebSocket clients.
+> Subscribes to `ad_predictions` and broadcasts to all WebSocket clients.
 
 **Step 6 — Dashboard Displays** (`frontend/src/Dashboard.tsx`)
-> The React dashboard has an open WebSocket connection to `ws://localhost:8000/ws/feed`. Every prediction arrives as a JSON push event and is prepended to the live feed table in under a second.
+> The React dashboard has an open websocket connection. Data is ingested by the completely decoupled `useAdFeed` hook, strictly verified by an anti-corruption layer, and rendered to the screen.
+
+---
+
+## Observability & Logging
+
+A major feature of this project is its **Industrial-Grade Reliability and Error Management**. When dealing with high-throughput streams, debugging shouldn't require stopping the system or digging into a debugger.
+
+### Where do the logs go?
+All frontend telemetry is natively piped into your **Browser's Developer Tools Console**. 
+To view them:
+1. Open the Dashboard in your browser (`http://localhost:5173`).
+2. Right-click anywhere and select **Inspect** (or press `F12` / `Cmd+Option+J`).
+3. Navigate to the **Console** tab.
+
+### How to use the logs
+The system uses a custom `StructuredLogger` that strictly adheres to the following grep-able format:
+`[YYYY-MM-DD HH:mm:ss.SSS] [CONTEXT_ID] [LEVEL] [Module/Function] - Message - {Context Data}`
+
+- **Context & Session Tracing:** Every time you load the page (and initiate a WebSocket connection), a unique Session ID (`CONTEXT_ID`) is generated. This tag appears in *every* system log. If a specific user reports a disconnect or data drop, you simply filter the console by their Session ID to seamlessly trace their connection lifecycle from "negotiation" to "close".
+- **Self-Explaining Errors:** If the network drops or a malformed JSON payload arrives, the React ecosystem does not intentionally crash under a vague javascript exception. Instead, `SelfExplainingError` objects map exactly to the trace logging constraints. You will literally read a descriptive explanation of `[WHY]` the exception was thrown alongside actionable `[FIX]` instructions telling engineers where to look (e.g., verifying Python schemas).
+- **Defensive Guard Clauses (Warnings):** If a single variable natively required by a display component is missing (like `null` IDs or deformed dates), pure formatter functions elegantly execute fallbacks (`#NA` or `--:--:--`) to prevent UI tearing, while invisibly emitting rich `[WARN]` logs indicating precisely what data node triggered the failsafe.
 
 ---
 
 ## Component Breakdown
 
 ### `shared/schemas.py` — The Data Contract
-Defines the two core Pydantic models shared across all services:
-- `AdRequest` — the raw ad auction event (id, timestamp, category, device, region, age, bid price, position)
-- `AdPrediction` — wraps `AdRequest` with the model's `ctr_probability`, a `status`, and optional `error`
+Defines Pydantic models: `AdRequest` and `AdPrediction`.
 
 ### `backend/pubsub.py` — The Streaming Abstraction Layer
-A single `PubSubService` class with `publish()` and `subscribe()` methods that support three backends:
-- **`kafka`** (active default): Uses `aiokafka` with an automatic retry loop on startup
-- **`redis`**: Uses `redis.asyncio` pub/sub
-- **`memory`**: Uses `asyncio.Queue` for pure in-process testing
+A `PubSubService` class with interchangeable backends (`kafka`, `redis`, `memory`), configured via `STREAMING_BACKEND`.
 
-The backend is chosen via the `STREAMING_BACKEND` environment variable, making it trivial to swap without changing business logic.
-
-### `backend/ws_manager.py` — The WebSocket Hub
-A `ConnectionManager` class maintains a list of active WebSocket connections. The `broadcast()` method fans out a message to every connected client simultaneously.
-
-### `ml/inference.py` — The Model Singleton
-Loads `ctr_model.pkl` once at startup and caches it. The `CTRModel.predict()` method accepts an `AdRequest`, builds a feature DataFrame, and returns a probability float. The singleton pattern ensures the model file is only read from disk once per container lifetime.
+### `frontend/src/hooks/useAdFeed.ts` — The Elastic Telemetry Engine
+A scalable custom React hook handling reconnect persistence via exponential backoffs, strict structural data ingestion routines, decoupled state aggregations, and high value ad computations across a bounding window.
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
-Ensure the following are installed and running on your machine:
-
-- **Docker Desktop** (with Docker Compose v2) — [Download here](https://www.docker.com/products/docker-desktop/)
-- **Python 3.11+** (only needed for the one-time training step)
-- A package manager with `pip` or a virtual environment
-
-Verify Docker is running:
-```bash
-docker --version
-docker compose version
-```
+- **Docker Desktop** (with Docker Compose v2)
+- **Python 3.11+** (only needed for the training step)
 
 ### Step 1 — Generate Training Data
-
-This creates the synthetic `ad_logs.csv` dataset used to train the model.
-
 ```bash
-# From the project root
 python generate_data.py
 ```
 
-You should see `ad_logs.csv` appear in the root directory (~1000 rows).
-
 ### Step 2 — Train the ML Model
-
-This trains the Logistic Regression pipeline and saves it to `ml/models/ctr_model.pkl`.
-
 ```bash
-# Install dependencies in a local venv first (optional but recommended)
 python -m venv .venv
 source .venv/bin/activate
-
 pip install scikit-learn pandas numpy
 
-# Train and save the model
 python ml/train.py
 ```
-
-You should see `ml/models/ctr_model.pkl` created. The `.pkl` file is mounted into the Docker containers at runtime via a volume, so **you only train once** — no rebuilds needed after retraining.
 
 ---
 
 ## Running the Project
 
-With the model trained, bring up the entire stack with a single command:
-
 ```bash
 docker-compose up --build
 ```
+> **First run**: This pulls Confluent Kafka/Zookeeper images (~600MB each) and builds the local images.
 
-> **First run**: This will pull the Confluent Kafka/Zookeeper images (~600MB each) and build the Python/Node images. Allow 3–5 minutes on a fresh machine.
-
-> **Subsequent runs**: Images are cached. Startup takes ~30 seconds for Kafka to elect a leader and for all services to connect.
-
-**To tear down completely** (removes containers, networks, and volumes):
+**To rebuild after code changes** (especially ML model `.pkl` updates):
 ```bash
 docker-compose down -v
-```
-
-**To rebuild after code changes** (without cache):
-```bash
-docker-compose down -v
-docker-compose build --no-cache && docker-compose up
+docker-compose up --build
 ```
 
 ---
 
 ## Accessing the Services
 
-Once `docker-compose up` is running and all containers are healthy:
-
 | Service | URL | Description |
 |---|---|---|
 | **Dashboard** | [http://localhost:5173](http://localhost:5173) | React live feed UI |
 | **FastAPI Docs** | [http://localhost:8000/docs](http://localhost:8000/docs) | Interactive API explorer |
-| **Kafka UI** | [http://localhost:8080](http://localhost:8080) | Monitor topics, messages, consumer groups |
-| **Kafka Broker** | `localhost:9092` | External port for local Kafka tooling |
-
-> **Tip**: Open Kafka UI and navigate to **Topics → ad_requests** to watch raw messages flow in. Switch to **ad_predictions** to see the ML output before it hits the dashboard.
+| **Kafka UI** | [http://localhost:8080](http://localhost:8080) | Monitor topics, messages |
+| **Kafka Broker** | `localhost:9092` | External port for local tooling |
 
 ---
 
 ## Environment Variables
 
-Configured in `.env` (read by all Python services via `docker-compose.yml`):
+Configured in `.env`:
 
 | Variable | Value | Description |
 |---|---|---|
-| `STREAMING_BACKEND` | `kafka` | Activates the Kafka pub/sub adapter in `pubsub.py` |
-| `KAFKA_BROKER` | `kafka:29092` | Internal Docker network address of the Kafka broker |
-
-> `29092` is the internal listener used for container-to-container communication. `9092` is the external listener exposed to the host machine.
+| `STREAMING_BACKEND` | `kafka` | Activates Kafka adapter |
+| `KAFKA_BROKER` | `kafka:29092` | Internal Docker address |
 
 ---
 
 ## Dashboard Features
-
-The React dashboard at `localhost:5173` provides:
-
-- **🟢 Live Streaming indicator** — turns red if the WebSocket connection drops
-- **Total Ads Processed counter** — session-wide total, increments in real-time
-- **High Value Ads counter** — tracks predictions with CTR > 0.70 (shown in green)
-- **Live Auction Feed table** — last 50 predictions, newest at the top, with:
-  - Color-coded rows: green tint for High Value (>0.70), red tint for Low Value (<0.30)
-  - Prediction score dot: 🟢 green / 🔴 red / ⚪ neutral
-  - **Filter dropdowns**: Filter by Category (Finance, Travel, Gaming, etc.) or Device (Mobile/Desktop)
-  - **Sortable columns**: Click any column header to sort ascending/descending (↑/↓ indicator)
-  - **Scrollable table**: Fixed height with sticky headers — scroll to see history while new rows arrive at the top
+- **Live Streaming indicator** — Tracks websocket lifecycle actively.
+- **Metric Aggregators** — Accumulates and visually emphasizes process volumes and High Value targets.
+- **Live Auction Feed Component** — Top-down history table with bounding capacity to heavily optimize DOM lifecycle repaints.
+- **Dynamic Sorting & Filtering** — Locale-comparable sorting mechanisms and multi-dimensional filter dropdowns to interact dynamically with the generated data stream.
