@@ -152,14 +152,8 @@ def train_model():
     logger.info("Training best model on full training set...")
     best_pipeline.fit(X_train, y_train)
 
-    # ── Calibrate probabilities (Platt scaling via isotonic) ─
-    # Calibration makes predict_proba outputs better-calibrated
-    # We do this after fitting so calibration uses held-out data only
-    calibrated = CalibratedClassifierCV(best_pipeline, cv=5, method='isotonic')
-    calibrated.fit(X_train, y_train)
-
     # ── Evaluation Report ─────────────────────────────────────
-    y_proba = calibrated.predict_proba(X_test)[:, 1]
+    y_proba = best_pipeline.predict_proba(X_test)[:, 1]
     y_pred = (y_proba >= 0.5).astype(int)
 
     auc = roc_auc_score(y_test, y_proba)
@@ -177,9 +171,9 @@ def train_model():
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
 
     with open(model_path, 'wb') as f:
-        pickle.dump(calibrated, f)
+        pickle.dump(best_pipeline, f)
 
-    logger.info(f"\n✓ Calibrated {best_name} pipeline saved to: {model_path}")
+    logger.info(f"\n✓ Uncalibrated {best_name} pipeline saved to: {model_path}")
 
 
 if __name__ == "__main__":
