@@ -16,7 +16,8 @@ async def consume_events():
         
         try:
             req = AdRequest(**msg_dict)
-            ctr = ctr_model.predict(req)
+            # Offload CPU-bound ML inference (Pandas/Scikit) to a thread to prevent blocking the async loop
+            ctr = await asyncio.to_thread(ctr_model.predict, req)
             prediction = AdPrediction(
                 request=req,
                 ctr_probability=ctr,

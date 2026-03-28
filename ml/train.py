@@ -172,9 +172,9 @@ def train_model():
     logger.info(f"Confusion Matrix:\n{confusion_matrix(y_test, y_pred)}")
 
     # ── Save ──────────────────────────────────────────────────
-    models_dir = os.path.join(base_dir, 'ml', 'models')
-    os.makedirs(models_dir, exist_ok=True)
-    model_path = os.path.join(models_dir, 'ctr_model.pkl')
+    default_path = os.path.join(base_dir, 'ml', 'models', 'ctr_model.pkl')
+    model_path = os.getenv("MODEL_PATH", default_path)
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
 
     with open(model_path, 'wb') as f:
         pickle.dump(calibrated, f)

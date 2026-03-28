@@ -1,8 +1,8 @@
 """
 CTR Model Inference
 ===================
-Loads the trained & calibrated CTR pipeline from disk once (singleton pattern)
-and exposes a single predict() method used by the Kafka consumer service.
+Loads the trained & calibrated CTR pipeline from disk once tracking lazy initialization.
+Exposes a single predict() method used by the Kafka consumer service.
 
 The loaded model is a CalibratedClassifierCV wrapping the best candidate 
 selected during training. predict_proba outputs are well-calibrated
@@ -19,19 +19,19 @@ logger = logging.getLogger(__name__)
 
 
 class CTRModel:
-    def __init__(self):
+    def __init__(self) -> None:
         self.model = None
-        self._load_model()
 
-    def _load_model(self):
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        model_path = os.path.join(base_dir, 'ml', 'models', 'ctr_model.pkl')
+    def _load_model(self) -> None:
+        default_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ml', 'models', 'ctr_model.pkl')
+        model_path = os.getenv("MODEL_PATH", default_path)
+        
         if os.path.exists(model_path):
             with open(model_path, 'rb') as f:
                 self.model = pickle.load(f)
             logger.info("CTR model loaded successfully.")
         else:
-            logger.warning(f"Model not found at {model_path}. Will return default probability 0.5.")
+            raise FileNotFoundError(f"Model missing at {model_path}. You must run ml/train.py first.")
 
     def _build_features(self, req: AdRequest) -> pd.DataFrame:
         """Build the feature row that matches the training schema exactly."""
@@ -49,12 +49,13 @@ class CTRModel:
     def predict(self, req: AdRequest) -> float:
         """Return calibrated click-through probability in [0, 1]."""
         if self.model is None:
-            return 0.5
+            self._load_model()
 
         df = self._build_features(req)
         prob = self.model.predict_proba(df)[0][1]  # P(click=1)
         return float(prob)
 
 
-# Module-level singleton — loaded once per container lifetime
+# Module-level singleton — loaded lazily on first prediction request
 ctr_model = CTRModel()
+
