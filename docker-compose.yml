@@ -1,0 +1,99 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    platform: linux/arm64
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    platform: linux/arm64
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    platform: linux/arm64
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+
+  backend:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    environment:
+      - STREAMING_BACKEND=kafka
+      - KAFKA_BROKER=kafka:29092
+    ports:
+      - "8000:8000"
+    depends_on:
+      - kafka
+    volumes:
+      - .:/app
+
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python streaming/producer.py
+    env_file: .env
+    environment:
+      - STREAMING_BACKEND=kafka
+      - KAFKA_BROKER=kafka:29092
+    depends_on:
+      - kafka
+      - consumer
+    volumes:
+      - .:/app
+
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python streaming/consumer.py
+    env_file: .env
+    environment:
+      - STREAMING_BACKEND=kafka
+      - KAFKA_BROKER=kafka:29092
+    depends_on:
+      - kafka
+    volumes:
+      - .:/app
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_WS_URL=ws://localhost:8000/ws/feed
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
